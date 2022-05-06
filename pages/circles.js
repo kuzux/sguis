@@ -39,6 +39,8 @@ class UndoStack {
         // we don't pop the elements immediately so that we can redo
         // when undid = 0, we can not redo
         this.undid = 0;
+
+        this.observers = [];
     }
 
     // each action has an action id (such that 2 actions are merge-able if they have same id)
@@ -58,7 +60,13 @@ class UndoStack {
             this.undid = 0;
         }
 
-        this.stack.push({ id, before, after });
+        let data = { id, before, after };
+
+        this.observers.forEach(obs => {
+            obs({ action: "push", data });
+        });
+
+        this.stack.push(data);
     }
 
     canUndo() {
@@ -71,6 +79,10 @@ class UndoStack {
         let last = this.stack[this.stack.length-1-this.undid];
         fn(last.before);
         this.undid++;
+
+        this.observers.forEach(obs => {
+            obs({ action: "undo", data: last.before });
+        });
 
         return true;
     }
@@ -86,7 +98,15 @@ class UndoStack {
         fn(last.after);
         this.undid--;
 
+        this.observers.forEach(obs => {
+            obs({ action: "redo", data: last.after });
+        });
+
         return true;
+    }
+
+    observe(fn) {
+        this.observers.push(fn);
     }
 }
 
@@ -164,7 +184,9 @@ class ViewModel {
         this.selected.observe(() => {
             if(this.rerender) this.rerender();
         });
-        // TODO: Make the undo stack observable as well
+        this.undoStack.observe(() => {
+            if(this.rerender) this.rerender();
+        });
     }
 
     select(id) {
@@ -218,7 +240,6 @@ class ViewModel {
             this.undoStack.push(`circle-${circle.id}`, 
                 { action: 'remove-circle', id: circle.id }, 
                 { action: 'add-circle', id: circle.id, center: point });
-            if(this.rerender) this.rerender();
 
             return;
         }
@@ -247,9 +268,6 @@ class ViewModel {
                 this.model.removeCircle(data.id);
             }
         });
-
-        // these will not be necessary once the undo stack is observable
-        if(this.rerender) this.rerender();
     }
 
     canRedo() {
@@ -264,13 +282,12 @@ class ViewModel {
                 this.model.addCircle(data.center, data.id);
             }
         });
-        if(this.rerender) this.rerender();
     }
 }
 
 export default function Circles() {
     // the main architecture is that the view model is a react-agnostic, stateful object
-    // it has two "main" callbacks. One for redrawing the canvas, and one for re-rendering the gui
+    // it has a re-render callback that both redraws the canvas and re-renders the gui
     // we can call methods on it to mutate state and (possibly) force a re-render
     let vm = useRef(new ViewModel());
     let canvasRef = useRef();
