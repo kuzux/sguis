@@ -36,6 +36,9 @@ class Observable {
 class UndoStack {
     constructor() {
         this.stack = [];
+        // we don't pop the elements immediately so that we can redo
+        // when undid = 0, we can not redo
+        this.undid = 0;
     }
 
     // each action has an action id (such that 2 actions are merge-able if they have same id)
@@ -43,26 +46,47 @@ class UndoStack {
     // and the data for the action that was just done
     push(id, before, after) {
         let last = null;
-        if(this.stack.length !== 0) last = this.stack[this.stack.length-1];
+        if(this.stack.length !== this.undid) last = this.stack[this.stack.length-1-this.undid];
         if(last?.id === id) {
-            this.stack[this.stack.length-1].after = after;
-        } else {
-            this.stack.push({id, before, after});
+            this.stack[this.stack.length-1-this.undid].after = after;
+            return;
         }
+
+        // adding a new one
+        if(this.undid !== 0) {
+            this.stack.splice(this.stack.length-this.undid, this.undid);
+            this.undid = 0;
+        }
+
+        this.stack.push({ id, before, after });
     }
 
     canUndo() {
-        this.stack.length !== 0;
+        return this.stack.length !== this.undid;
     }
 
     undo(fn) {
         if(!this.canUndo()) return false;
-        fn(this.stack.pop());
+
+        let last = this.stack[this.stack.length-1-this.undid];
+        fn(last.before);
+        this.undid++;
+
         return true;
     }
 
+    canRedo() {
+        return this.undid !== 0;
+    }
+
     redo(fn) {
-        return false;
+        if(!this.canRedo()) return false;
+
+        let last = this.stack[this.stack.length-this.undid];
+        fn(last.after);
+        this.undid--;
+
+        return true;
     }
 }
 
@@ -72,11 +96,23 @@ class Model {
         this.nextId = 1;
     }
 
-    addCircle(center) {
-        let circle = { id: this.nextId, center: center, radius: 20 };
-        this.nextId++;
+    // second argument is optional, you can specify an id
+    addCircle(center, id = null) {
+        if(!id) {
+            id = this.nextId;
+            this.nextId++;
+        }
+
+        let circle = { id: id, center: center, radius: 10 };
         this.circles.modify((cs) => [...cs, circle]);
+
         return circle;
+    }
+
+    removeCircle(id) {
+        this.circles.modify(circles => {
+            return circles.filter(circle => circle.id !== id);
+        });
     }
 
     getCircles() {
@@ -95,12 +131,27 @@ class Model {
 class ViewModel {
     constructor() {
         this.draw = null;
+        this.rerender = null;
+
         this.model = new Model();
-        this.radius = 20;
+        this.radius = new Observable(20);
+        this.undoStack = new UndoStack();
+        this.selected = new Observable(null);
+        
+        this.selectionId = 0;
 
         this.model.onCircles((cs) => {
             if(this.draw) this.draw(cs);
         });
+
+        this.radius.observe(() => {
+            if(this.rerender) this.rerender();
+        });
+        this.selected.observe(() => {
+            if(this.rerender) this.rerender();
+        });
+        // TODO: Make the undo stack observable as well
+
 
         // for testing
         setTimeout(() => {
@@ -116,36 +167,41 @@ class ViewModel {
         this.model.modifyEach(circle => {
             return {...circle, selected: circle.id === id};
         });
-        this.selected = id;
-        this.radius = selectedCircle.radius;
-        if(this.rerender) this.rerender();
+        this.selectionId++;
+        this.selected.set(id);
+        this.radius.set(selectedCircle.radius);
     }
 
     deselect() {
         this.model.modifyEach(circle => {
             return { ...circle, selected: false };
         });
-        this.selected = null;
-        if(this.rerender) this.rerender();
+        this.selected.set(null);
     }
 
+    // returns the old and new radii
     setRadius(id, radius) {
+        let oldRadius = null;
         this.model.modifyEach(circle => {
             let newRadius = circle.radius;
-            if(circle.id === this.selected) newRadius = radius;
+            if(circle.id === id) {
+                oldRadius = circle.radius;
+                newRadius = radius;
+            }
             return { ...circle, radius: newRadius };
         });
 
-        if(this.rerender) this.rerender();
+        return { old: oldRadius, new: radius };
     }
 
     setSelectedRadius(radius) {
-        this.radius = radius;
-        if(!this.selected) return;
+        if(!this.selected.get()) return;
+        this.radius.set(radius);
 
-        this.setRadius(this.selected, radius);
-
-        // TODO: Add undo point here
+        let radii = this.setRadius(this.selected.get(), radius);
+        this.undoStack.push(`radius-${this.selectionId}`, 
+            { action: 'set-radius', id: this.selected.get(), radius: radii.old }, 
+            { action: 'set-radius', id: this.selected.get(), radius: radii.new });
     }
 
     click(point) {
@@ -165,28 +221,69 @@ class ViewModel {
 
         if(clicked === undefined) {
             let circle = this.model.addCircle(point);
-            if(this.rerender) this.rerender();
             this.select(circle.id);
-            // TODO: Add undo poimt here as well
+
+            this.undoStack.push(`circle-${circle.id}`, 
+                { action: 'remove-circle', id: circle.id }, 
+                { action: 'add-circle', id: circle.id, center: point });
+            if(this.rerender) this.rerender();
+
             return;
         }
 
-        if(clicked && clicked.id === this.selected) {
+        if(clicked && clicked.id === this.selected.get()) {
             this.deselect();
             return;
         }
 
         this.select(clicked.id);
     }
+
+    canUndo() {
+        return this.undoStack.canUndo();
+    }
+
+    undo() {
+        this.undoStack.undo((data) => {
+            if(data.action === 'set-radius') {
+                this.setRadius(data.id, data.radius);
+            } else if(data.action === 'remove-circle') {
+                this.model.removeCircle(data.id);
+            }
+        });
+
+        // these will not be necessary once the undo stack is observable
+        if(this.rerender) this.rerender();
+    }
+
+    canRedo() {
+        return this.undoStack.canRedo();
+    }
+
+    redo() {
+        this.undoStack.redo((data) => {
+            if(data.action === 'set-radius') {
+                this.setRadius(data.id, data.radius);
+            } else if(data.action === 'add-circle') {
+                this.model.addCircle(data.center, data.id);
+            }
+        });
+        if(this.rerender) this.rerender();
+    }
 }
 
 export default function Circles() {
+    // the main architecture is that the view model is a react-agnostic, stateful object
+    // it has two "main" callbacks. One for redrawing the canvas, and one for re-rendering the gui
+    // we can call methods on it to mutate state and (possibly) force a re-render
     let vm = useRef(new ViewModel());
     let canvasRef = useRef();
 
+    // we achieve re-rendering by holding on to an integer and incrementing it every time we want to rerender
     let [_renderTick, setRenderTick] = useState(0);
     let forceRerender = () => setRenderTick(tick => tick+1);
 
+    // we need to set up the callbacks (and the event listener) only once
     useEffect(() => {
         vm.current.draw = (circles) => {
             if(!canvasRef.current) return;
@@ -210,13 +307,12 @@ export default function Circles() {
 
         canvasRef.current.addEventListener("click", (evt) => {
             vm.current.click({ x: evt.x, y: evt.y });
-            forceRerender();
         });
     }, []);
 
     let slider;
     if(vm.current.selected) {
-        slider = <input type="range" min="5" max="200" value={vm.current.radius} onChange={evt => {
+        slider = <input type="range" min="5" max="50" value={vm.current.radius.get()} onChange={evt => {
             vm.current.setSelectedRadius(parseInt(evt.target.value));
         }} />;
     }
@@ -224,5 +320,9 @@ export default function Circles() {
     return <div>
         <canvas width={800} heigh={600} ref={canvasRef}></canvas>
         <p>{slider}</p>
+        <p>
+            <button disabled={!vm.current.canUndo()} onClick={()=>vm.current.undo()}>Undo</button>
+            <button disabled={!vm.current.canRedo()} onClick={()=>vm.current.redo()}>Redo</button>
+        </p>
     </div>
 }
