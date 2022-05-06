@@ -33,10 +33,43 @@ class Observable {
     }
 }
 
+class UndoStack {
+    constructor() {
+        this.stack = [];
+    }
+
+    // each action has an action id (such that 2 actions are merge-able if they have same id)
+    // the data for action to go back to previous state
+    // and the data for the action that was just done
+    push(id, before, after) {
+        let last = null;
+        if(this.stack.length !== 0) last = this.stack[this.stack.length-1];
+        if(last?.id === id) {
+            this.stack[this.stack.length-1].after = after;
+        } else {
+            this.stack.push({id, before, after});
+        }
+    }
+
+    canUndo() {
+        this.stack.length !== 0;
+    }
+
+    undo(fn) {
+        if(!this.canUndo()) return false;
+        fn(this.stack.pop());
+        return true;
+    }
+
+    redo(fn) {
+        return false;
+    }
+}
+
 class Model {
     constructor() {
         this.circles = new Observable([]);
-        this.nextId = 0;
+        this.nextId = 1;
     }
 
     addCircle(center) {
@@ -77,7 +110,7 @@ class ViewModel {
     }
 
     select(id) {
-        let selectedCircle = this.model.circles.find(circle => circle.id === id);
+        let selectedCircle = this.model.getCircles().find(circle => circle.id === id);
         if(!selectedCircle) return;
 
         this.model.modifyEach(circle => {
@@ -85,6 +118,7 @@ class ViewModel {
         });
         this.selected = id;
         this.radius = selectedCircle.radius;
+        if(this.rerender) this.rerender();
     }
 
     deselect() {
@@ -92,6 +126,26 @@ class ViewModel {
             return { ...circle, selected: false };
         });
         this.selected = null;
+        if(this.rerender) this.rerender();
+    }
+
+    setRadius(id, radius) {
+        this.model.modifyEach(circle => {
+            let newRadius = circle.radius;
+            if(circle.id === this.selected) newRadius = radius;
+            return { ...circle, radius: newRadius };
+        });
+
+        if(this.rerender) this.rerender();
+    }
+
+    setSelectedRadius(radius) {
+        this.radius = radius;
+        if(!this.selected) return;
+
+        this.setRadius(this.selected, radius);
+
+        // TODO: Add undo point here
     }
 
     click(point) {
@@ -109,23 +163,20 @@ class ViewModel {
             return sqdist <= sqr;
         });
 
-        if(clicked === undefined || clicked.id === this.selected) {
-            console.log("deselecting");
+        if(clicked === undefined) {
+            let circle = this.model.addCircle(point);
+            if(this.rerender) this.rerender();
+            this.select(circle.id);
+            // TODO: Add undo poimt here as well
+            return;
+        }
+
+        if(clicked && clicked.id === this.selected) {
             this.deselect();
             return;
         }
 
         this.select(clicked.id);
-        console.log("clicked", clicked);
-    }
-
-    setSelectedRadius() {
-        this.model.modifyEach(circle => {
-            let newRadius = circle.radius;
-            if(circle.id === this.selected) newRadius = this.radius;
-        });
-
-        // TODO: Add undo point here
     }
 }
 
@@ -153,6 +204,10 @@ export default function Circles() {
             });
         };
 
+        vm.current.rerender = () => {
+            forceRerender();
+        }
+
         canvasRef.current.addEventListener("click", (evt) => {
             vm.current.click({ x: evt.x, y: evt.y });
             forceRerender();
@@ -160,8 +215,10 @@ export default function Circles() {
     }, []);
 
     let slider;
-    // how do we make sure that this is updated every time 
     if(vm.current.selected) {
+        slider = <input type="range" min="5" max="200" value={vm.current.radius} onChange={evt => {
+            vm.current.setSelectedRadius(parseInt(evt.target.value));
+        }} />;
     }
 
     return <div>
