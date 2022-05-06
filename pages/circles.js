@@ -143,7 +143,7 @@ class Model {
         this.circles.modify((cs) => cs.map(fn));
     }
 
-    onCircles(fn) {
+    observe(fn) {
         this.circles.observe(fn);
     }
 
@@ -174,17 +174,17 @@ class ViewModel {
         
         this.selectionId = 0;
 
-        this.model.onCircles((cs) => {
-            if(this.rerender) this.rerender(cs);
+        this.model.observe(() => {
+            if(this.rerender) this.rerender();
+        });
+        this.undoStack.observe(() => {
+            if(this.rerender) this.rerender();
         });
 
         this.radius.observe(() => {
             if(this.rerender) this.rerender();
         });
         this.selected.observe(() => {
-            if(this.rerender) this.rerender();
-        });
-        this.undoStack.observe(() => {
             if(this.rerender) this.rerender();
         });
     }
