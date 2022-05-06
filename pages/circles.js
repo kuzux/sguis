@@ -126,22 +126,36 @@ class Model {
     onCircles(fn) {
         this.circles.observe(fn);
     }
+
+    // returns the old and new radii
+    setRadius(id, radius) {
+        let oldRadius = null;
+        this.modifyEach(circle => {
+            let newRadius = circle.radius;
+            if(circle.id === id) {
+                oldRadius = circle.radius;
+                newRadius = radius;
+            }
+            return { ...circle, radius: newRadius };
+        });
+
+        return { old: oldRadius, new: radius };
+    }
 }
 
 class ViewModel {
     constructor() {
-        this.draw = null;
         this.rerender = null;
 
         this.model = new Model();
-        this.radius = new Observable(20);
         this.undoStack = new UndoStack();
+        this.radius = new Observable(20);
         this.selected = new Observable(null);
         
         this.selectionId = 0;
 
         this.model.onCircles((cs) => {
-            if(this.draw) this.draw(cs);
+            if(this.rerender) this.rerender(cs);
         });
 
         this.radius.observe(() => {
@@ -151,13 +165,6 @@ class ViewModel {
             if(this.rerender) this.rerender();
         });
         // TODO: Make the undo stack observable as well
-
-
-        // for testing
-        setTimeout(() => {
-            this.model.addCircle({ x: 50, y: 50 });
-            this.model.addCircle({ x: 100, y: 100 });
-        }, 100);
     }
 
     select(id) {
@@ -179,26 +186,11 @@ class ViewModel {
         this.selected.set(null);
     }
 
-    // returns the old and new radii
-    setRadius(id, radius) {
-        let oldRadius = null;
-        this.model.modifyEach(circle => {
-            let newRadius = circle.radius;
-            if(circle.id === id) {
-                oldRadius = circle.radius;
-                newRadius = radius;
-            }
-            return { ...circle, radius: newRadius };
-        });
-
-        return { old: oldRadius, new: radius };
-    }
-
     setSelectedRadius(radius) {
         if(!this.selected.get()) return;
         this.radius.set(radius);
 
-        let radii = this.setRadius(this.selected.get(), radius);
+        let radii = this.model.setRadius(this.selected.get(), radius);
         this.undoStack.push(`radius-${this.selectionId}`, 
             { action: 'set-radius', id: this.selected.get(), radius: radii.old }, 
             { action: 'set-radius', id: this.selected.get(), radius: radii.new });
@@ -239,6 +231,10 @@ class ViewModel {
         this.select(clicked.id);
     }
 
+    getCircles() {
+        return this.model.getCircles();
+    }
+
     canUndo() {
         return this.undoStack.canUndo();
     }
@@ -246,7 +242,7 @@ class ViewModel {
     undo() {
         this.undoStack.undo((data) => {
             if(data.action === 'set-radius') {
-                this.setRadius(data.id, data.radius);
+                this.model.setRadius(data.id, data.radius);
             } else if(data.action === 'remove-circle') {
                 this.model.removeCircle(data.id);
             }
@@ -263,7 +259,7 @@ class ViewModel {
     redo() {
         this.undoStack.redo((data) => {
             if(data.action === 'set-radius') {
-                this.setRadius(data.id, data.radius);
+                this.model.setRadius(data.id, data.radius);
             } else if(data.action === 'add-circle') {
                 this.model.addCircle(data.center, data.id);
             }
@@ -281,13 +277,16 @@ export default function Circles() {
 
     // we achieve re-rendering by holding on to an integer and incrementing it every time we want to rerender
     let [_renderTick, setRenderTick] = useState(0);
-    let forceRerender = () => setRenderTick(tick => tick+1);
 
     // we need to set up the callbacks (and the event listener) only once
     useEffect(() => {
-        vm.current.draw = (circles) => {
+        vm.current.rerender = () => {
+            // rerender ui first, then redraw the canvas
+            setRenderTick(tick => tick+1);
+
             if(!canvasRef.current) return;
             let ctx = canvasRef.current.getContext('2d');
+            let circles = vm.current.getCircles();
 
             ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     
@@ -300,10 +299,6 @@ export default function Circles() {
                 if(circle.selected) ctx.fill();
             });
         };
-
-        vm.current.rerender = () => {
-            forceRerender();
-        }
 
         canvasRef.current.addEventListener("click", (evt) => {
             vm.current.click({ x: evt.x, y: evt.y });
