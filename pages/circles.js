@@ -9,11 +9,11 @@ class Observable {
         this.observers = [];
     }
 
-    get() {
+    get value() {
         return this.#value;
     }
 
-    set(v) {
+    set value(v) {
         this.#value = v;
         this.observers.forEach(obs => {
             obs(v);
@@ -40,6 +40,8 @@ class UndoStack {
         // when undid = 0, we can not redo
         this.undid = 0;
 
+        // we cannot simply use stack = new Observable([]) since we use destructive updates on the stack
+        // but using immutable.js is an option (Similarly in the model)
         this.observers = [];
     }
 
@@ -136,7 +138,21 @@ class Model {
     }
 
     getCircles() {
-        return this.circles.get();
+        return this.circles.value;
+    }
+
+    // if argument is a function, filters by it
+    // if it is a value, finds a circle with that id
+    // returns null on not found
+    findCircle(idOrFn) {
+        let fn;
+        if(typeof idOrFn === 'function') {
+            fn = idOrFn;
+        } else {
+            fn = (circle) => circle.id === idOrFn;
+        }
+        let res = this.circles.value.find(fn);
+        return res || null;
     }
 
     modifyEach(fn) {
@@ -190,32 +206,32 @@ class ViewModel {
     }
 
     select(id) {
-        let selectedCircle = this.model.getCircles().find(circle => circle.id === id);
+        let selectedCircle = this.model.findCircle(id);
         if(!selectedCircle) return;
 
         this.model.modifyEach(circle => {
             return {...circle, selected: circle.id === id};
         });
         this.selectionId++;
-        this.selected.set(id);
-        this.radius.set(selectedCircle.radius);
+        this.selected.value = id;
+        this.radius.value = selectedCircle.radius;
     }
 
     deselect() {
         this.model.modifyEach(circle => {
             return { ...circle, selected: false };
         });
-        this.selected.set(null);
+        this.selected.value = null;
     }
 
     setSelectedRadius(radius) {
-        if(!this.selected.get()) return;
-        this.radius.set(radius);
+        if(!this.selected.value) return;
+        this.radius.value = radius;
 
-        let radii = this.model.setRadius(this.selected.get(), radius);
+        let radii = this.model.setRadius(this.selected.value, radius);
         this.undoStack.push(`radius-${this.selectionId}`, 
-            { action: 'set-radius', id: this.selected.get(), radius: radii.old }, 
-            { action: 'set-radius', id: this.selected.get(), radius: radii.new });
+            { action: 'set-radius', id: this.selected.value, radius: radii.old }, 
+            { action: 'set-radius', id: this.selected.value, radius: radii.new });
     }
 
     click(point) {
@@ -224,7 +240,7 @@ class ViewModel {
         if(this.lastCall && nowMs - this.lastCall < 20) return;
         this.lastCall = nowMs;
 
-        let clicked = this.model.getCircles().find((circle) => {
+        let clicked = this.model.findCircle(circle => {
             let dx = (point.x-circle.center.x);
             let dy = (point.y-circle.center.y);
             let sqdist = dx*dx+dy*dy;
@@ -233,7 +249,7 @@ class ViewModel {
             return sqdist <= sqr;
         });
 
-        if(clicked === undefined) {
+        if(clicked === null) {
             let circle = this.model.addCircle(point);
             this.select(circle.id);
 
@@ -244,7 +260,7 @@ class ViewModel {
             return;
         }
 
-        if(clicked && clicked.id === this.selected.get()) {
+        if(clicked && clicked.id === this.selected.value) {
             this.deselect();
             return;
         }
@@ -324,7 +340,7 @@ export default function Circles() {
 
     let slider;
     if(vm.current.selected) {
-        slider = <input type="range" min="5" max="50" value={vm.current.radius.get()} onChange={evt => {
+        slider = <input type="range" min="5" max="50" value={vm.current.radius.value} onChange={evt => {
             vm.current.setSelectedRadius(parseInt(evt.target.value));
         }} />;
     }
